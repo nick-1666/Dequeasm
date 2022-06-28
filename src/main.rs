@@ -1,9 +1,10 @@
 extern crate regex;
+extern crate getch;
 
 use regex::Regex;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::process::exit;
 
 trait DequeAbstraction {
@@ -16,7 +17,7 @@ struct Deque {
     q: VecDeque<u8>,
     /// internally set left boolean for
     /// operations on the front or back
-    left: bool
+    left: bool,
 }
 impl DequeAbstraction for Deque {
     fn push(&mut self, v: u8) {
@@ -45,14 +46,35 @@ fn main() {
     };
 
     let mut instructions = String::new();
-    file.read_to_string(&mut instructions).unwrap();
-    instructions = instructions.replace("\r", "");
-    instructions = instructions.replace("\t", "");
+    let rg = Regex::new("(;.*)*(\r)*(\t)*").unwrap();
 
-    let rg = Regex::new(r";.*").unwrap();
+    file.read_to_string(&mut instructions).unwrap();
     instructions = rg.replace_all(instructions.as_str(), "").to_string();
 
-    for (ip, line) in instructions.split("\n").enumerate() {
+    let instructions = instructions
+        .split("\n")
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+    let mut labels: HashMap<String, u8> = [].into();
+
+    // pre-compute labels making sure there isn't any duplicates
+    // Allows for jumping to unread labels
+    for ip in 0..instructions.len() {
+        let mut cmd: String = (&*instructions[ip]).to_string();
+        if cmd.ends_with(":") {
+            cmd.pop();
+            if labels.contains_key(&*cmd) {
+                panic!("{}: Label {:?} defined twice!", ip, cmd)
+            }
+            labels.insert(cmd, ip as u8);
+        }
+    }
+
+    let mut ip= 0;
+
+    while ip < instructions.len() {
+        let line = &*instructions[ip];
+
         if line.len() == 0 {
             continue;
         }
@@ -62,19 +84,22 @@ fn main() {
         } else {
             deque.left = false;
         }
-
         let line = line.replace("~", "");
         let instruction = line.split_ascii_whitespace().next().unwrap();
         let line = line.replacen(instruction, "", 1).replace(" ", "");
-        let mut parameters = line.split(",");
+        let parameters = line.split(",");
 
         match instruction {
             "POP" => {
                 deque.pop();
-            },
+            }
             "PSH" => {
                 parameters.for_each(|v| {
-                    deque.push(v.parse().unwrap());
+                    if v.parse::<u8>().is_err() {
+                        deque.push(*labels.get(v).expect(&*format!("Label '{}' not found!", v)));
+                    } else {
+                        deque.push(v.parse::<u8>().unwrap());
+                    }
                 });
             }
             "DUP" => {
@@ -112,10 +137,12 @@ fn main() {
                 deque.push(z);
             }
             "ROL" => {
-                let back = deque.q
+                let back = deque
+                    .q
                     .pop_back()
                     .expect("{}: Stack underflow! Roll requires at least two values on the deque.");
-                let front = deque.q
+                let front = deque
+                    .q
                     .pop_front()
                     .expect("{}: Stack underflow! Roll requires at least two values on the deque.");
                 deque.q.push_front(back);
@@ -147,19 +174,51 @@ fn main() {
                 let y = deque.pop();
                 deque.push(y % x);
             }
-
+            "JMP" => {
+                let x =  deque.pop() as usize;
+                ip = x;
+                println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                continue;
+            }
+            "JNZ" => {
+                let x =  deque.pop() as usize;
+                let y =  deque.pop() as usize;
+                if y != 0 {
+                    ip = x;
+                    println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                    continue;
+                }
+            }
+            "INP" => {
+                //WHY THE FUCK IS A CROSS COMPATIBLE GETCH SO HARD >:c
+            }
+            "OUT" => {
+                let x = parameters.clone().next().unwrap().parse::<i32>();
+                if x.is_err() {
+                    let c = deque.pop() as char;
+                    print!("{}", c);
+                } else {
+                    for i in 0..x.unwrap() {
+                        let c = deque.pop() as char;
+                        print!("{}", c);
+                    }
+                }
+            }
             "HLT" => {
+                println!("\n{:?}",  deque.q);
                 exit(0);
             }
             _ => {
-                if instruction.ends_with(":") {
-                    //is label
+                if !instruction.ends_with(":") {
+                    panic!("{}: Unexpected command {:?}!\n*Hint: labels end with ':'", ip, instruction)
                 } else {
-                    panic!("{}: Command '{}' is invalid!", ip+1, instruction);
+                    ip += 1;
+                    continue;
                 }
             }
         }
-
-        println!("{}: {:<3} -> {:?}", ip+1, instruction, deque.q);
+        println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+        ip += 1;
     }
+    println!("\n{:?}",  deque.q);
 }
