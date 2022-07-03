@@ -1,5 +1,4 @@
 extern crate regex;
-extern crate getch;
 
 use regex::Regex;
 use std::collections::{HashMap, VecDeque};
@@ -37,6 +36,7 @@ impl DequeAbstraction for Deque {
 }
 
 fn main() {
+    let debug = false;
     let filename = "test.asm";
     let mut file = File::open(filename).unwrap();
 
@@ -47,18 +47,19 @@ fn main() {
 
     let mut instructions = String::new();
     let rg = Regex::new("(;.*)*(\r)*(\t)*").unwrap();
+    let rg_2 = Regex::new("\n\n").unwrap();
 
     file.read_to_string(&mut instructions).unwrap();
     instructions = rg.replace_all(instructions.as_str(), "").to_string();
-
+    instructions = rg_2.replace_all(instructions.as_str(), "").to_string();
     let instructions = instructions
         .split("\n")
-        .map(str::to_string)
+        .map(|x| x.to_string())
         .collect::<Vec<String>>();
     let mut labels: HashMap<String, u8> = [].into();
-
     // pre-compute labels making sure there isn't any duplicates
     // Allows for jumping to unread labels
+
     for ip in 0..instructions.len() {
         let mut cmd: String = (&*instructions[ip]).to_string();
         if cmd.ends_with(":") {
@@ -86,21 +87,64 @@ fn main() {
         }
         let line = line.replace("~", "");
         let instruction = line.split_ascii_whitespace().next().unwrap();
-        let line = line.replacen(instruction, "", 1).replace(" ", "");
-        let parameters = line.split(",");
+        let line = line.replacen(instruction, "", 1);
+
+        let seperator = Regex::new(r"[^\\](,)").unwrap();
+        let parameters_pre_literals = seperator.split(&*line);
+        let parameters: Vec<String> = parameters_pre_literals.map(|x| {
+            return if x.trim().starts_with("\"") {
+                x.to_string()
+            } else {
+                let o = x.trim().replace(" ", "").to_string();
+                o
+            }
+        }).collect();
 
         match instruction {
             "POP" => {
-                deque.pop();
+                let x = parameters[0].parse::<i32>();
+                if x.is_err() {
+                    deque.pop();
+                } else {
+                    for _i in 0..x.unwrap() {
+                        deque.pop();
+                    }
+                }
             }
             "PSH" => {
-                parameters.for_each(|v| {
+                for i in 0..parameters.len() {
+                    let v = parameters.clone()[i].to_string();
                     if v.parse::<u8>().is_err() {
-                        deque.push(*labels.get(v).expect(&*format!("Label '{}' not found!", v)));
+                        if v.trim().starts_with("\"") && v.ends_with("\"") {
+                            let mut literal = false;
+
+                            for c in v.trim()[1..v.trim().len()-1].chars() {
+                                if c == '\\' {
+                                    literal = true;
+                                    continue;
+                                }
+
+                                if literal {
+                                    match c {
+                                        'n' => deque.push('\n' as u8),
+                                        't' => deque.push('\t' as u8),
+                                        '\"' => deque.push('\"' as u8),
+                                        '\'' => deque.push('\'' as u8),
+                                        '\\' => deque.push('\\' as u8),
+                                        _ => {}
+                                    }
+                                    literal = false;
+                                } else {
+                                    deque.push(c as u8);
+                                }
+                            }
+                        } else {
+                            deque.push(*labels.get(&v).expect(&*format!("Label '{}' not found!", v)));
+                        }
                     } else {
                         deque.push(v.parse::<u8>().unwrap());
                     }
-                });
+                }
             }
             "DUP" => {
                 let x = deque.pop();
@@ -121,20 +165,60 @@ fn main() {
                 deque.push(y);
             }
             "RCW" => {
-                let x = deque.pop();
-                let y = deque.pop();
-                let z = deque.pop();
-                deque.push(x);
-                deque.push(z);
-                deque.push(y);
+                let x = parameters[0].parse::<i32>();
+                if x.is_err() {
+                    let x = deque.pop();
+                    let y = deque.pop();
+                    let z = deque.pop();
+                    deque.push(x);
+                    deque.push(z);
+                    deque.push(y);
+                } else {
+                    for _i in 0..x.unwrap() {
+                        let x = deque.pop();
+                        let y = deque.pop();
+                        let z = deque.pop();
+                        deque.push(x);
+                        deque.push(z);
+                        deque.push(y);
+                    }
+                }
             }
             "RCC" => {
-                let x = deque.pop();
-                let y = deque.pop();
-                let z = deque.pop();
-                deque.push(y);
-                deque.push(x);
-                deque.push(z);
+                let x = parameters[0].parse::<i32>();
+                if x.is_err() {
+                    let x = deque.pop();
+                    let y = deque.pop();
+                    let z = deque.pop();
+                    deque.push(y);
+                    deque.push(x);
+                    deque.push(z);
+                } else {
+                    for _i in 0..x.unwrap() {
+                        let x = deque.pop();
+                        let y = deque.pop();
+                        let z = deque.pop();
+                        deque.push(y);
+                        deque.push(x);
+                        deque.push(z);
+                    }
+                }
+            }
+            "SHR" => {
+                let x = parameters[0].parse::<i32>();
+                if x.is_err() {
+                    deque.q.rotate_right(1);
+                } else {
+                    deque.q.rotate_right(x.unwrap() as usize);
+                }
+            }
+            "SHL" => {
+                let x = parameters[0].parse::<i32>();
+                if x.is_err() {
+                    deque.q.rotate_left(1);
+                } else {
+                    deque.q.rotate_left(x.unwrap() as usize);
+                }
             }
             "ROL" => {
                 let back = deque
@@ -177,7 +261,9 @@ fn main() {
             "JMP" => {
                 let x =  deque.pop() as usize;
                 ip = x;
-                println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                if debug {
+                    println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                }
                 continue;
             }
             "JNZ" => {
@@ -185,7 +271,9 @@ fn main() {
                 let y =  deque.pop() as usize;
                 if y != 0 {
                     ip = x;
-                    println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                    if debug {
+                        println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+                    }
                     continue;
                 }
             }
@@ -193,19 +281,21 @@ fn main() {
                 //WHY THE FUCK IS A CROSS COMPATIBLE GETCH SO HARD >:c
             }
             "OUT" => {
-                let x = parameters.clone().next().unwrap().parse::<i32>();
+                let x = parameters[0].parse::<i32>();
                 if x.is_err() {
                     let c = deque.pop() as char;
                     print!("{}", c);
                 } else {
-                    for i in 0..x.unwrap() {
+                    for _i in 0..x.unwrap() {
                         let c = deque.pop() as char;
                         print!("{}", c);
                     }
                 }
             }
             "HLT" => {
-                println!("\n{:?}",  deque.q);
+                if debug {
+                    println!("\n{:?}",  deque.q);
+                }
                 exit(0);
             }
             _ => {
@@ -217,8 +307,13 @@ fn main() {
                 }
             }
         }
-        println!("{}: {:<3} -> {:?}", ip + 1, instruction, deque.q);
+        if debug {
+            println!("{}: {:<3} -> {:?}", ip + 1,  instruction, deque.q);
+        }
         ip += 1;
     }
-    println!("\n{:?}",  deque.q);
+    if debug {
+        println!("\nEND: {:?}",  deque.q);
+    }
+    exit(0);
 }
